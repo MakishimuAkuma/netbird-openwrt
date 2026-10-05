@@ -136,7 +136,7 @@ jobs:
           # Keep only package architectures actually published by this
           # OpenWrt release. This prevents a stale SDK/package architecture
           # from entering the matrix.
-          INDEX="$(curl -fsSL https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/packages/)">
+          INDEX="$(curl -fsSL https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/packages/)"
 
           SUPPORTED=()
           for ARCH in "${CANDIDATES[@]}"; do
@@ -236,7 +236,6 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.check.outputs.version }}
-          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
         run: |
           set -euo pipefail
