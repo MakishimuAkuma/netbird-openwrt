@@ -37,12 +37,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          API="https://api.github.com/repos/netbirdio/netbird/releases/latest"
-
           RELEASE_JSON="$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$API")"
+            https://api.github.com/repos/netbirdio/netbird/releases/latest)"
 
           UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
           UPSTREAM_VERSION="${UPSTREAM_TAG#v}"
@@ -63,8 +61,8 @@ jobs:
             --jq '.[0].tagName // ""')"
 
           if [ -z "$CURRENT_TAG" ]; then
-            echo "No previous stable package release found."
             BUILD=true
+            echo "No previous stable package release found."
           else
             CURRENT_VERSION="${CURRENT_TAG#v}"
             echo "Latest package release: $CURRENT_TAG"
@@ -77,57 +75,103 @@ jobs:
             fi
           fi
 
-          # Never automatically downgrade a package version already present
-          # in the source tree.
-          if [ -f netbird/Makefile ]; then
-            MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile | head -n1 || true)"
-
-            if [ -n "$MAKEFILE_VERSION" ] && \
-               [ "$(printf '%s\n%s\n' "$UPSTREAM_VERSION" "$MAKEFILE_VERSION" | sort -V | tail -n1)" = "$MAKEFILE_VERSION" ] && \
-               [ "$MAKEFILE_VERSION" != "$UPSTREAM_VERSION" ]; then
-              echo "WARNING: Makefile version $MAKEFILE_VERSION is newer than upstream $UPSTREAM_VERSION."
-              echo "No automatic downgrade will be performed."
-              BUILD=false
-            fi
+          # Do not automatically downgrade a newer manually maintained package.
+          MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile | head -n1 || true)"
+          if [ -n "$MAKEFILE_VERSION" ] && \
+             [ "$(printf '%s\n%s\n' "$UPSTREAM_VERSION" "$MAKEFILE_VERSION" | sort -V | tail -n1)" = "$MAKEFILE_VERSION" ] && \
+             [ "$MAKEFILE_VERSION" != "$UPSTREAM_VERSION" ]; then
+            echo "WARNING: Makefile version $MAKEFILE_VERSION is newer than upstream $UPSTREAM_VERSION."
+            BUILD=false
           fi
 
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
           echo "version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
 
-          if [ "$BUILD" = true ]; then
-            echo "New NetBird stable release detected: $UPSTREAM_TAG"
-          else
-            echo "No newer stable NetBird release to build."
+  discover:
+    name: Discover OpenWrt 25.12 architectures
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.arch.outputs.matrix }}
+      count: ${{ steps.arch.outputs.count }}
+
+    steps:
+      - name: Discover supported package architectures
+        id: arch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # OpenWrt's Go package infrastructure exposes GO_ARCH_DEPENDS.
+          # This is the Go/NetBird-compatible package-architecture set used by
+          # current OpenWrt package CI for 25.12. Architectures known not to
+          # have a usable 25.12 SDK are excluded below.
+          CANDIDATES=(
+            arm_cortex-a5_vfpv4
+            arm_cortex-a7_neon-vfpv4
+            arm_cortex-a8_vfpv3
+            arm_cortex-a9
+            arm_cortex-a9_vfpv3-d16
+            arm_cortex-a9_neon
+            arm_cortex-a15_neon-vfpv4
+            aarch64_cortex-a53
+            aarch64_cortex-a72
+            aarch64_cortex-a76
+            aarch64_generic
+            mips_24kc
+            mips_mips32
+            mipsel_24kc
+            mipsel_24kc_24kf
+            mipsel_74kc
+            mipsel_mips32
+            mips64_octeonplus
+            riscv64_generic
+            loongarch64_generic
+            i386_pentium4
+            x86_64
+          )
+
+          # Keep only package architectures actually published by this
+          # OpenWrt release. This prevents a stale SDK/package architecture
+          # from entering the matrix.
+          INDEX="$(curl -fsSL https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/packages/)">
+
+          SUPPORTED=()
+          for ARCH in "${CANDIDATES[@]}"; do
+            if grep -qE "href=[\"']${ARCH}/[\"']" <<< "$INDEX"; then
+              SUPPORTED+=("$ARCH")
+            else
+              echo "Skipping unavailable OpenWrt package architecture: $ARCH"
+            fi
+          done
+
+          if [ "${#SUPPORTED[@]}" -eq 0 ]; then
+            echo "ERROR: No supported OpenWrt architectures discovered"
+            exit 1
           fi
+
+          MATRIX="$(printf '%s\n' "${SUPPORTED[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | {arch: .}')"
+          COUNT="${#SUPPORTED[@]}"
+
+          echo "Architectures ($COUNT):"
+          printf ' - %s\n' "${SUPPORTED[@]}"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.arch }}
-    needs: check
+    needs:
+      - check
+      - discover
     if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
-      matrix:
-        arch:
-          - arm_cortex-a7
-          - arm_cortex-a9
-          - arm_cortex-a15_neon-vfpv4
-
-          - aarch64_cortex-a53
-          - aarch64_cortex-a72
-          - rockchip-armv8
-          - aarch64_generic
-
-          - i386_pentium4
-          - x86_64
-
-          - mipsel_24kc
-          - mips_mips32
-          - mips64_octeonplus
-
-          - riscv64_generic
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -142,13 +186,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          sed -i \
-            -E "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" \
-            netbird/Makefile
-
-          sed -i \
-            -E "s#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v\$(PKG_VERSION)\\?#" \
-            netbird/Makefile
+          sed -i -E "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" netbird/Makefile
+          sed -i -E 's#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v$(PKG_VERSION)?#' netbird/Makefile
 
       - name: Calculate source hash
         shell: bash
@@ -157,132 +196,88 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://codeload.github.com/netbirdio/netbird/tar.gz/v${VERSION}"
           TMP="$(mktemp)"
+          curl -fL --retry 5 --retry-delay 2 \
+            "https://codeload.github.com/netbirdio/netbird/tar.gz/v${VERSION}" \
+            -o "$TMP"
 
-          curl -fL --retry 5 --retry-delay 2 "$URL" -o "$TMP"
           HASH="$(sha256sum "$TMP" | awk '{print $1}')"
           rm -f "$TMP"
 
-          sed -i \
-            -E "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" \
-            netbird/Makefile
-
+          sed -i -E "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" netbird/Makefile
           echo "PKG_HASH=${HASH}"
 
       - name: Verify package
         shell: bash
         run: |
           set -euo pipefail
-
           test -f netbird/Makefile
           test -f netbird/files/netbird.init
-
           grep '^PKG_NAME:=' netbird/Makefile
           grep '^PKG_VERSION:=' netbird/Makefile
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
 
-      - name: Build NetBird
+      - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
           FEEDNAME: action
           PACKAGES: netbird
+          INDEX: 1
+          PRIVATE_KEY: ${{ secrets.APK_SIGNING_KEY }}
           NO_REFRESH_CHECK: 1
           NO_SHFMT_CHECK: 1
           BUILD_LOG: 1
           V: s
 
-      - name: Find package
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE="$(find bin/packages \
-            -type f \
-            -name 'netbird-*.apk' \
-            -print \
-            | head -n 1)"
-
-          if [ -z "$PACKAGE" ]; then
-            echo "ERROR: NetBird package not found"
-            find bin/packages -type f \( -name '*.apk' -o -name '*.ipk' \) -print | sort || true
-            exit 1
-          fi
-
-          echo "Found: $PACKAGE"
-          echo "path=$PACKAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare signed APK repository index
+      - name: Collect package and signed index
+        id: collect
         shell: bash
         env:
+          VERSION: ${{ needs.check.outputs.version }}
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${APK_SIGNING_KEY:-}" ]; then
-            echo "ERROR: Repository secret APK_SIGNING_KEY is not configured."
-            echo "Generate a P-256 key and add the private key as the APK_SIGNING_KEY secret."
+          PACKAGE="$(find "bin/packages/${{ matrix.arch }}/action" \
+            -maxdepth 1 -type f -name 'netbird-*.apk' -print -quit)"
+
+          if [ -z "$PACKAGE" ]; then
+            echo "ERROR: NetBird package not found for ${{ matrix.arch }}"
+            find bin/packages -type f \( -name '*.apk' -o -name '*.ipk' \) -print | sort || true
             exit 1
           fi
 
-          APK_BIN="$(find staging_dir/host/bin -maxdepth 1 -type f -name apk -print -quit)"
-          if [ -z "$APK_BIN" ]; then
-            echo "ERROR: OpenWrt apk host tool not found in staging_dir/host/bin"
+          INDEX="bin/packages/${{ matrix.arch }}/action/packages.adb"
+          if [ ! -s "$INDEX" ]; then
+            echo "ERROR: packages.adb not found for ${{ matrix.arch }}"
             exit 1
           fi
 
-          printf '%s' "$APK_SIGNING_KEY" > feed-key.pem
-          chmod 600 feed-key.pem
+          mkdir -p release "feed/${{ matrix.arch }}"
 
-          mkdir -p "feed/${{ matrix.arch }}"
+          cp "$PACKAGE" "release/netbird-${VERSION}-${{ matrix.arch }}.apk"
+          cp "$PACKAGE" "feed/${{ matrix.arch }}/"
+          cp "$INDEX" "feed/${{ matrix.arch }}/packages.adb"
 
-          # Keep the original OpenWrt package filename in the feed. apk uses
-          # name-version.apk when resolving a package from packages.adb.
-          cp "${{ steps.package.outputs.path }}" \
-            "feed/${{ matrix.arch }}/"
+          # The OpenWrt SDK signs packages.adb with the supplied private key.
+          # Publish only the public key.
+          printf '%s' "$APK_SIGNING_KEY" > /tmp/netbird-feed.pem
+          chmod 600 /tmp/netbird-feed.pem
+          openssl ec -in /tmp/netbird-feed.pem -pubout -out "feed/${{ matrix.arch }}/netbird-feed.pub.pem"
+          rm -f /tmp/netbird-feed.pem
 
-          openssl ec -in feed-key.pem -pubout > feed/netbird-feed.pub.pem
+          echo "release=release/netbird-${VERSION}-${{ matrix.arch }}.apk" >> "$GITHUB_OUTPUT"
 
-          (
-            cd "feed/${{ matrix.arch }}"
-            "$APK_BIN" mkndx \
-              --allow-untrusted \
-              --sign-key "$GITHUB_WORKSPACE/feed-key.pem" \
-              --output packages.adb \
-              ./*.apk
-          )
-
-          test -s "feed/${{ matrix.arch }}/packages.adb"
-          test -s feed/netbird-feed.pub.pem
-
-          echo "Signed feed index created for ${{ matrix.arch }}"
-
-      - name: Prepare Release package
-        shell: bash
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          mkdir -p release
-
-          cp "${{ steps.package.outputs.path }}" \
-            "release/netbird-${VERSION}-${{ matrix.arch }}.apk"
-
-          rm -f feed-key.pem
-
-      - name: Upload build artifact
+      - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netbird-package-${{ matrix.arch }}
+          name: netbird-feed-${{ matrix.arch }}
           path: |
             release/*.apk
-            feed/${{ matrix.arch }}/*.apk
-            feed/${{ matrix.arch }}/packages.adb
-            feed/netbird-feed.pub.pem
+            feed/${{ matrix.arch }}/*
           if-no-files-found: error
           retention-days: 7
 
@@ -299,6 +294,7 @@ jobs:
     name: Create Release and publish APK feed
     needs:
       - check
+      - discover
       - build
     if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-latest
@@ -307,48 +303,39 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: netbird-package-*
+          pattern: netbird-feed-*
           path: artifacts
           merge-multiple: true
 
-      - name: Verify packages and indexes
+      - name: Verify all architectures
         shell: bash
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
 
-          EXPECTED_ARCHES=(
-            arm_cortex-a7
-            arm_cortex-a9
-            arm_cortex-a15_neon-vfpv4
-            aarch64_cortex-a53
-            aarch64_cortex-a72
-            rockchip-armv8
-            aarch64_generic
-            i386_pentium4
-            x86_64
-            mipsel_24kc
-            mips_mips32
-            mips64_octeonplus
-            riscv64_generic
-          )
+          EXPECTED="${{ needs.discover.outputs.count }}"
+          FOUND="$(find artifacts/release -maxdepth 1 -type f -name '*.apk' | wc -l)"
 
-          COUNT="$(find artifacts/release -type f -name '*.apk' | wc -l)"
-          [ "$COUNT" -eq 13 ] || {
-            echo "ERROR: Expected 13 Release APKs, found $COUNT"
+          echo "Expected: $EXPECTED"
+          echo "Found:    $FOUND"
+
+          [ "$FOUND" -eq "$EXPECTED" ] || {
+            echo "ERROR: Not all architecture builds produced an APK"
+            find artifacts -type f -print | sort
             exit 1
           }
 
-          for ARCH in "${EXPECTED_ARCHES[@]}"; do
-            test -f "artifacts/feed/${ARCH}/packages.adb"
-            test "$(find "artifacts/feed/${ARCH}" -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
-            test -f "artifacts/release/netbird-${VERSION}-${ARCH}.apk"
-          done
+          FIRST_ARCH="$(jq -r '.arch[0]' <<< '${{ needs.discover.outputs.matrix }}')"
+          test -s "artifacts/feed/${FIRST_ARCH}/netbird-feed.pub.pem"
 
-          test -s artifacts/feed/netbird-feed.pub.pem
+          while read -r ARCH; do
+            test -s "artifacts/feed/${ARCH}/packages.adb"
+            test -f "artifacts/feed/${ARCH}/netbird-feed.pub.pem"
+            test "$(find "artifacts/feed/${ARCH}" -maxdepth 1 -type f -name 'netbird-*.apk' | wc -l)" -eq 1
+          done < <(jq -r '.arch[]' <<< '${{ needs.discover.outputs.matrix }}')
 
-          echo "All 13 packages and signed package indexes are present."
+          echo "All discovered architecture builds completed and have signed packages.adb."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -359,10 +346,10 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/release/*.apk
-            artifacts/feed/netbird-feed.pub.pem
+            artifacts/feed/aarch64_cortex-a53/netbird-feed.pub.pem
           fail_on_unmatched_files: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Publish APK feed to gh-pages
         shell: bash
@@ -385,88 +372,48 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             touch .nojekyll
             git add .nojekyll
-            git commit -m "Initialize APK feed"
+            git commit -m "Initialize NetBird APK feed"
             git remote add origin "$REPO_URL"
+            git push -u origin "$FEED_BRANCH"
           fi
 
           cd "$GITHUB_WORKSPACE/feed-repo"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mkdir -p "${FEED_ROOT}"
 
-          for ARCH in \
-            arm_cortex-a7 \
-            arm_cortex-a9 \
-            arm_cortex-a15_neon-vfpv4 \
-            aarch64_cortex-a53 \
-            aarch64_cortex-a72 \
-            rockchip-armv8 \
-            aarch64_generic \
-            i386_pentium4 \
-            x86_64 \
-            mipsel_24kc \
-            mips_mips32 \
-            mips64_octeonplus \
-            riscv64_generic
-          do
+          jq -r '.arch[]' <<< '${{ needs.discover.outputs.matrix }}' | while read -r ARCH; do
             rm -rf "${FEED_ROOT}/${ARCH}"
             mkdir -p "${FEED_ROOT}/${ARCH}"
 
-            # The feed must contain the package with its real OpenWrt name.
+            # Each architecture gets the real OpenWrt package name plus the
+            # signed packages.adb generated by the SDK.
             cp "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/"*.apk \
               "${FEED_ROOT}/${ARCH}/"
             cp "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/packages.adb" \
               "${FEED_ROOT}/${ARCH}/packages.adb"
           done
 
-          cp "${GITHUB_WORKSPACE}/artifacts/feed/netbird-feed.pub.pem" \
+          cp "${GITHUB_WORKSPACE}/artifacts/feed/$(jq -r '.arch[0]' <<< '${{ needs.discover.outputs.matrix }}')/netbird-feed.pub.pem" \
             netbird-feed.pub.pem
 
           cat > README.md <<EOF
           # NetBird OpenWrt APK feed
 
-          OpenWrt version: ${OPENWRT_VERSION}
-          NetBird version: ${VERSION}
+          OpenWrt: ${OPENWRT_VERSION}
+          NetBird: ${VERSION}
 
-          Repository index URLs:
-
-          EOF
-
-          for ARCH in \
-            arm_cortex-a7 \
-            arm_cortex-a9 \
-            arm_cortex-a15_neon-vfpv4 \
-            aarch64_cortex-a53 \
-            aarch64_cortex-a72 \
-            rockchip-armv8 \
-            aarch64_generic \
-            i386_pentium4 \
-            x86_64 \
-            mipsel_24kc \
-            mips_mips32 \
-            mips64_octeonplus \
-            riscv64_generic
-          do
-            echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}/${ARCH}/packages.adb" >> README.md
-          done
-
-          cat >> README.md <<'EOF'
-
-          Public signing key:
-
+          Add the public key:
           https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/netbird-feed.pub.pem
+
+          Repository URL:
+          https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}/<ARCH>/packages.adb
           EOF
 
           git add .
-
-          if git diff --cached --quiet; then
-            echo "Feed is already up to date."
-          else
-            git commit -m "NetBird ${VERSION}"
-            git push origin "$FEED_BRANCH"
-          fi
+          git commit -m "NetBird ${VERSION}" || true
+          git push origin "$FEED_BRANCH"
 
       - name: Write OpenWrt repository instructions
         shell: bash
@@ -475,36 +422,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          OWNER="${GITHUB_REPOSITORY%%/*}"
-          REPO="${GITHUB_REPOSITORY#*/}"
           BASE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}"
+          KEY="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/netbird-feed.pub.pem"
 
           {
             echo "## NetBird OpenWrt APK feed"
             echo
-            echo "NetBird ${VERSION} was built for all 13 architectures."
+            echo "NetBird ${VERSION}"
             echo
-            echo "### One-time trust setup"
-            echo
-            echo '```sh'
-            echo "wget -qO /etc/apk/keys/netbird-feed.pem ${BASE%/*}/netbird-feed.pub.pem"
-            echo '```'
-            echo
-            echo "### Repository URL for this architecture"
-            echo
-            echo '```text'
-            echo "${BASE}/<ARCH>/packages.adb"
-            echo '```'
-            echo
-            echo "### Example for x86_64"
+            echo "### Install trust key once"
             echo
             echo '```sh'
-            echo "wget -qO /etc/apk/keys/netbird-feed.pem ${BASE%/*}/netbird-feed.pub.pem"
-            echo "echo '${BASE}/x86_64/packages.adb' > /etc/apk/repositories.d/netbird.list"
+            echo "wget -qO /etc/apk/keys/netbird-feed.pem ${KEY}"
+            echo '```'
+            echo
+            echo "### Add repository"
+            echo
+            echo '```sh'
+            echo "echo '${BASE}/<ARCH>/packages.adb' > /etc/apk/repositories.d/netbird.list"
             echo 'apk update'
             echo 'apk add netbird'
-            echo 'apk upgrade netbird'
             echo '```'
             echo
-            echo "The feed uses a signed packages.adb index, so after the public key is installed no --allow-untrusted option is required."
+            echo "### Update NetBird"
+            echo
+            echo '```sh'
+            echo 'apk update'
+            echo 'apk upgrade netbird'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
