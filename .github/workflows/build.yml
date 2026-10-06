@@ -3,7 +3,7 @@ name: Build NetBird
 on:
   schedule:
     # Check for a new stable NetBird release every 6 hours.
-    - cron: "0 0 * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -245,6 +245,12 @@ jobs:
           grep '^PKG_VERSION:=' netbird/Makefile
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
+
+      - name: Prepare workspace permissions for DinD
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chmod 0777 "$GITHUB_WORKSPACE"
 
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
