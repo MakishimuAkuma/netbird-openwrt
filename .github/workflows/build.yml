@@ -475,7 +475,6 @@ jobs:
         with:
           tag_name: '${{ needs.check.outputs.tag }}'
           name: 'NetBird ${{ needs.check.outputs.tag }}'
-          target_commitish: '${{ github.sha }}'
           generate_release_notes: true
           files: >
             artifacts/release/*.apk
