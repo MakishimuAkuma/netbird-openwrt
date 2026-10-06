@@ -303,6 +303,17 @@ jobs:
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
 
+      - name: Set build parallelism
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        CPUS="$(nproc)"
+        echo "Using ${CPUS} CPU cores"
+
+        echo "MAKEFLAGS=-j${CPUS}" >> "$GITHUB_ENV"
+        echo "CONFIG_BUILD_NCPUS=${CPUS}" >> "$GITHUB_ENV"
+
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
         env:
