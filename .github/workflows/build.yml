@@ -16,7 +16,8 @@ env:
 jobs:
   check:
     name: Check NetBird release
-    runs-on: [self-hosted, Linux, X64, dind]
+    runs-on: [self-hosted, Linux, X64]
+
     outputs:
       build: ${{ steps.check.outputs.build }}
       version: ${{ steps.check.outputs.version }}
@@ -28,16 +29,42 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Prepare self-hosted runner
+      - name: Check runner
         shell: bash
         run: |
           set -euo pipefail
-          command -v docker >/dev/null || { echo "ERROR: Docker is required by openwrt/gh-action-sdk"; exit 1; }
-          docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not accessible by the runner user"; exit 1; }
-          command -v sudo >/dev/null || { echo "ERROR: sudo is required by openwrt/gh-action-sdk"; exit 1; }
-          command -v curl >/dev/null || { echo "ERROR: curl is required"; exit 1; }
-          command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
-          command -v git >/dev/null || { echo "ERROR: git is required"; exit 1; }
+
+          command -v docker >/dev/null || {
+            echo "ERROR: Docker is required"
+            exit 1
+          }
+
+          docker info >/dev/null 2>&1 || {
+            echo "ERROR: Docker daemon is not accessible by the runner user"
+            exit 1
+          }
+
+          command -v curl >/dev/null || {
+            echo "ERROR: curl is required"
+            exit 1
+          }
+
+          command -v jq >/dev/null || {
+            echo "ERROR: jq is required"
+            exit 1
+          }
+
+          command -v git >/dev/null || {
+            echo "ERROR: git is required"
+            exit 1
+          }
+
+          echo "Runner:"
+          uname -a
+
+          echo
+          echo "Docker:"
+          docker version --format '{{.Server.Version}}'
 
       - name: Check latest stable NetBird release
         id: check
@@ -86,6 +113,7 @@ jobs:
 
           # Do not automatically downgrade a newer manually maintained package.
           MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile | head -n1 || true)"
+
           if [ -n "$MAKEFILE_VERSION" ] && \
              [ "$(printf '%s\n%s\n' "$UPSTREAM_VERSION" "$MAKEFILE_VERSION" | sort -V | tail -n1)" = "$MAKEFILE_VERSION" ] && \
              [ "$MAKEFILE_VERSION" != "$UPSTREAM_VERSION" ]; then
@@ -101,29 +129,19 @@ jobs:
     name: Discover OpenWrt 25.12 architectures
     needs: check
     if: needs.check.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64, dind]
+    runs-on: [self-hosted, Linux, X64]
+
     outputs:
       matrix: ${{ steps.arch.outputs.matrix }}
       count: ${{ steps.arch.outputs.count }}
 
     steps:
-      - name: Prepare self-hosted runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v curl >/dev/null || { echo "ERROR: curl is required"; exit 1; }
-          command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
-
       - name: Discover supported package architectures
         id: arch
         shell: bash
         run: |
           set -euo pipefail
 
-          # OpenWrt's Go package infrastructure exposes GO_ARCH_DEPENDS.
-          # This is the Go/NetBird-compatible package-architecture set used by
-          # current OpenWrt package CI for 25.12. Architectures known not to
-          # have a usable 25.12 SDK are excluded below.
           CANDIDATES=(
             arm_cortex-a5_vfpv4
             arm_cortex-a7_neon-vfpv4
@@ -149,17 +167,16 @@ jobs:
             x86_64
           )
 
-          # Keep only package architectures actually published by this
-          # OpenWrt release. This prevents a stale SDK/package architecture
-          # from entering the matrix.
-          INDEX="$(curl -fsSL https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/packages/)"
+          INDEX="$(curl -fsSL \
+            "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/packages/")"
 
           SUPPORTED=()
+
           for ARCH in "${CANDIDATES[@]}"; do
             if grep -qE "href=[\"']${ARCH}/[\"']" <<< "$INDEX"; then
               SUPPORTED+=("$ARCH")
             else
-              echo "Skipping unavailable OpenWrt package architecture: $ARCH"
+              echo "Skipping unavailable architecture: $ARCH"
             fi
           done
 
@@ -168,7 +185,12 @@ jobs:
             exit 1
           fi
 
-          MATRIX="$(printf '%s\n' "${SUPPORTED[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | {arch: .}')"
+          MATRIX="$(
+            printf '%s\n' "${SUPPORTED[@]}" |
+              jq -R -s -c \
+                'split("\n") | map(select(length > 0)) | {arch: .}'
+          )"
+
           COUNT="${#SUPPORTED[@]}"
 
           echo "Architectures ($COUNT):"
@@ -182,8 +204,10 @@ jobs:
     needs:
       - check
       - discover
+
     if: needs.check.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64, dind]
+
+    runs-on: [self-hosted, Linux, X64]
 
     strategy:
       fail-fast: false
@@ -191,16 +215,35 @@ jobs:
         arch: ${{ fromJSON(needs.discover.outputs.matrix).arch }}
 
     steps:
-      - name: Prepare self-hosted runner
+      - name: Check runner
         shell: bash
         run: |
           set -euo pipefail
-          command -v docker >/dev/null || { echo "ERROR: Docker is required by openwrt/gh-action-sdk"; exit 1; }
-          docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not accessible by the runner user"; exit 1; }
-          command -v sudo >/dev/null || { echo "ERROR: sudo is required by openwrt/gh-action-sdk"; exit 1; }
-          command -v curl >/dev/null || { echo "ERROR: curl is required"; exit 1; }
-          command -v git >/dev/null || { echo "ERROR: git is required"; exit 1; }
-          command -v openssl >/dev/null || { echo "ERROR: openssl is required"; exit 1; }
+
+          command -v docker >/dev/null || {
+            echo "ERROR: Docker is required"
+            exit 1
+          }
+
+          docker info >/dev/null 2>&1 || {
+            echo "ERROR: Docker daemon is not accessible"
+            exit 1
+          }
+
+          command -v curl >/dev/null || {
+            echo "ERROR: curl is required"
+            exit 1
+          }
+
+          command -v git >/dev/null || {
+            echo "ERROR: git is required"
+            exit 1
+          }
+
+          command -v openssl >/dev/null || {
+            echo "ERROR: openssl is required"
+            exit 1
+          }
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -214,8 +257,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          sed -i -E "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" netbird/Makefile
-          sed -i -E 's#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v$(PKG_VERSION)?#' netbird/Makefile
+          sed -i -E \
+            "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" \
+            netbird/Makefile
+
+          sed -i -E \
+            's#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v$(PKG_VERSION)?#' \
+            netbird/Makefile
 
       - name: Calculate source hash
         shell: bash
@@ -225,48 +273,35 @@ jobs:
           set -euo pipefail
 
           TMP="$(mktemp)"
-          curl -fL --retry 5 --retry-delay 2 \
+
+          curl -fL \
+            --retry 5 \
+            --retry-delay 2 \
             "https://codeload.github.com/netbirdio/netbird/tar.gz/v${VERSION}" \
             -o "$TMP"
 
           HASH="$(sha256sum "$TMP" | awk '{print $1}')"
+
           rm -f "$TMP"
 
-          sed -i -E "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" netbird/Makefile
+          sed -i -E \
+            "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" \
+            netbird/Makefile
+
           echo "PKG_HASH=${HASH}"
 
       - name: Verify package
         shell: bash
         run: |
           set -euo pipefail
+
           test -f netbird/Makefile
           test -f netbird/files/netbird.init
+
           grep '^PKG_NAME:=' netbird/Makefile
           grep '^PKG_VERSION:=' netbird/Makefile
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
-
-      - name: Prepare SDK output directories
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          SDK_WORK="${RUNNER_TEMP}/netbird-sdk"
-
-          rm -rf "$SDK_WORK"
-          mkdir -p "$SDK_WORK/artifacts" "$SDK_WORK/feed"
-
-          # gh-action-sdk runs the SDK in another Docker container.
-          # Keep these bind-mounted directories world-writable so the
-          # nested container can always create /artifacts/bin and /feed.
-          chmod 0777 "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
-
-          echo "SDK_WORK=$SDK_WORK" >> "$GITHUB_ENV"
-
-          echo "=== SDK output directories ==="
-          ls -ld "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
-          stat -c '%A %a %u:%g %n' \
-            "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
 
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
@@ -280,35 +315,8 @@ jobs:
           NO_SHFMT_CHECK: 1
           BUILD_LOG: 1
           V: s
-          ARTIFACTS_DIR: ${{ env.SDK_WORK }}/artifacts
-          FEED_DIR: ${{ env.SDK_WORK }}/feed
-
-      - name: Copy SDK output into workspace
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test -d "$SDK_WORK/artifacts/bin" || {
-            echo "ERROR: SDK did not produce $SDK_WORK/artifacts/bin"
-            find "$SDK_WORK/artifacts" -maxdepth 5 -print | sort || true
-            exit 1
-          }
-
-          rm -rf bin
-          cp -a "$SDK_WORK/artifacts/bin" ./bin
-
-          # Preserve SDK logs for the existing artifact-upload step.
-          if [ -d "$SDK_WORK/artifacts/logs" ]; then
-            rm -rf logs
-            cp -a "$SDK_WORK/artifacts/logs" ./logs
-          fi
-
-          echo "=== Package output ==="
-          find "bin/packages/${{ matrix.arch }}/action" \
-            -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Collect package and signed index
-        id: collect
         shell: bash
         env:
           VERSION: ${{ needs.check.outputs.version }}
@@ -316,35 +324,51 @@ jobs:
         run: |
           set -euo pipefail
 
-          PACKAGE="$(find "bin/packages/${{ matrix.arch }}/action" \
-            -maxdepth 1 -type f -name 'netbird-*.apk' -print -quit)"
+          PACKAGE="$(
+            find "bin/packages/${{ matrix.arch }}/action" \
+              -maxdepth 1 \
+              -type f \
+              -name 'netbird-*.apk' \
+              -print -quit
+          )"
 
           if [ -z "$PACKAGE" ]; then
             echo "ERROR: NetBird package not found for ${{ matrix.arch }}"
-            find bin/packages -type f \( -name '*.apk' -o -name '*.ipk' \) -print | sort || true
+            find bin/packages -type f \
+              \( -name '*.apk' -o -name '*.ipk' \) \
+              -print | sort || true
             exit 1
           fi
 
           INDEX="bin/packages/${{ matrix.arch }}/action/packages.adb"
+
           if [ ! -s "$INDEX" ]; then
             echo "ERROR: packages.adb not found for ${{ matrix.arch }}"
             exit 1
           fi
 
-          mkdir -p release "feed/${{ matrix.arch }}"
+          mkdir -p \
+            release \
+            "feed/${{ matrix.arch }}"
 
-          cp "$PACKAGE" "release/netbird-${VERSION}-${{ matrix.arch }}.apk"
-          cp "$PACKAGE" "feed/${{ matrix.arch }}/"
-          cp "$INDEX" "feed/${{ matrix.arch }}/packages.adb"
+          cp "$PACKAGE" \
+            "release/netbird-${VERSION}-${{ matrix.arch }}.apk"
 
-          # The OpenWrt SDK signs packages.adb with the supplied private key.
-          # Publish only the public key.
+          cp "$PACKAGE" \
+            "feed/${{ matrix.arch }}/"
+
+          cp "$INDEX" \
+            "feed/${{ matrix.arch }}/packages.adb"
+
           printf '%s' "$APK_SIGNING_KEY" > /tmp/netbird-feed.pem
           chmod 600 /tmp/netbird-feed.pem
-          openssl ec -in /tmp/netbird-feed.pem -pubout -out "feed/${{ matrix.arch }}/netbird-feed.pub.pem"
-          rm -f /tmp/netbird-feed.pem
 
-          echo "release=release/netbird-${VERSION}-${{ matrix.arch }}.apk" >> "$GITHUB_OUTPUT"
+          openssl ec \
+            -in /tmp/netbird-feed.pem \
+            -pubout \
+            -out "feed/${{ matrix.arch }}/netbird-feed.pub.pem"
+
+          rm -f /tmp/netbird-feed.pem
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -371,16 +395,16 @@ jobs:
       - check
       - discover
       - build
+
     if: needs.check.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64, dind]
+
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
-      - name: Prepare self-hosted runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v git >/dev/null || { echo "ERROR: git is required"; exit 1; }
-          command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -391,33 +415,57 @@ jobs:
 
       - name: Verify all architectures
         shell: bash
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
 
           EXPECTED="${{ needs.discover.outputs.count }}"
-          FOUND="$(find artifacts/release -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          FOUND="$(
+            find artifacts/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' |
+            wc -l
+          )"
 
           echo "Expected: $EXPECTED"
           echo "Found:    $FOUND"
 
-          [ "$FOUND" -eq "$EXPECTED" ] || {
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
             echo "ERROR: Not all architecture builds produced an APK"
             find artifacts -type f -print | sort
             exit 1
-          }
+          fi
 
-          FIRST_ARCH="$(jq -r '.arch[0]' <<< '${{ needs.discover.outputs.matrix }}')"
-          test -s "artifacts/feed/${FIRST_ARCH}/netbird-feed.pub.pem"
+          FIRST_ARCH="$(
+            jq -r '.arch[0]' \
+              <<< '${{ needs.discover.outputs.matrix }}'
+          )"
+
+          test -s \
+            "artifacts/feed/${FIRST_ARCH}/netbird-feed.pub.pem"
 
           while read -r ARCH; do
-            test -s "artifacts/feed/${ARCH}/packages.adb"
-            test -f "artifacts/feed/${ARCH}/netbird-feed.pub.pem"
-            test "$(find "artifacts/feed/${ARCH}" -maxdepth 1 -type f -name 'netbird-*.apk' | wc -l)" -eq 1
-          done < <(jq -r '.arch[]' <<< '${{ needs.discover.outputs.matrix }}')
+            test -s \
+              "artifacts/feed/${ARCH}/packages.adb"
 
-          echo "All discovered architecture builds completed and have signed packages.adb."
+            test -f \
+              "artifacts/feed/${ARCH}/netbird-feed.pub.pem"
+
+            COUNT="$(
+              find "artifacts/feed/${ARCH}" \
+                -maxdepth 1 \
+                -type f \
+                -name 'netbird-*.apk' |
+              wc -l
+            )"
+
+            test "$COUNT" -eq 1
+          done < <(
+            jq -r '.arch[]' \
+              <<< '${{ needs.discover.outputs.matrix }}'
+          )
+
+          echo "All architecture builds completed successfully."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -430,6 +478,7 @@ jobs:
             artifacts/release/*.apk
             artifacts/feed/${{ fromJSON(needs.discover.outputs.matrix).arch[0] }}/netbird-feed.pub.pem
           fail_on_unmatched_files: true
+
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -443,41 +492,66 @@ jobs:
 
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          if git ls-remote --exit-code --heads "$REPO_URL" "$FEED_BRANCH" >/dev/null 2>&1; then
-            git clone --depth 1 --branch "$FEED_BRANCH" "$REPO_URL" feed-repo
+          if git ls-remote \
+            --exit-code \
+            --heads \
+            "$REPO_URL" \
+            "$FEED_BRANCH" >/dev/null 2>&1; then
+
+            git clone \
+              --depth 1 \
+              --branch "$FEED_BRANCH" \
+              "$REPO_URL" \
+              feed-repo
           else
             mkdir feed-repo
             cd feed-repo
+
             git init
             git checkout --orphan "$FEED_BRANCH"
+
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
             touch .nojekyll
+
             git add .nojekyll
             git commit -m "Initialize NetBird APK feed"
+
             git remote add origin "$REPO_URL"
             git push -u origin "$FEED_BRANCH"
           fi
 
           cd "$GITHUB_WORKSPACE/feed-repo"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          mkdir -p "${FEED_ROOT}"
+          mkdir -p "$FEED_ROOT"
 
-          jq -r '.arch[]' <<< '${{ needs.discover.outputs.matrix }}' | while read -r ARCH; do
+          jq -r '.arch[]' \
+            <<< '${{ needs.discover.outputs.matrix }}' |
+          while read -r ARCH; do
+
             rm -rf "${FEED_ROOT}/${ARCH}"
             mkdir -p "${FEED_ROOT}/${ARCH}"
 
-            # Each architecture gets the real OpenWrt package name plus the
-            # signed packages.adb generated by the SDK.
-            cp "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/"*.apk \
+            cp \
+              "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/"*.apk \
               "${FEED_ROOT}/${ARCH}/"
-            cp "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/packages.adb" \
+
+            cp \
+              "${GITHUB_WORKSPACE}/artifacts/feed/${ARCH}/packages.adb" \
               "${FEED_ROOT}/${ARCH}/packages.adb"
           done
 
-          cp "${GITHUB_WORKSPACE}/artifacts/feed/$(jq -r '.arch[0]' <<< '${{ needs.discover.outputs.matrix }}')/netbird-feed.pub.pem" \
+          FIRST_ARCH="$(
+            jq -r '.arch[0]' \
+              <<< '${{ needs.discover.outputs.matrix }}'
+          )"
+
+          cp \
+            "${GITHUB_WORKSPACE}/artifacts/feed/${FIRST_ARCH}/netbird-feed.pub.pem" \
             netbird-feed.pub.pem
 
           cat > README.md <<EOF
@@ -487,14 +561,19 @@ jobs:
           NetBird: ${VERSION}
 
           Add the public key:
+
           https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/netbird-feed.pub.pem
 
           Repository URL:
+
           https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}/<ARCH>/packages.adb
           EOF
 
           git add .
-          git commit -m "NetBird ${VERSION}" || true
+
+          git commit \
+            -m "NetBird ${VERSION}" || true
+
           git push origin "$FEED_BRANCH"
 
       - name: Write OpenWrt repository instructions
