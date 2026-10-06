@@ -1,34 +1,30 @@
 name: Build NetBird
-
-on:
+'on':
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
-
+    - cron: 0 */6 * * *
+  workflow_dispatch: null
 permissions:
   contents: write
-
 env:
   OPENWRT_VERSION: 25.12.5
   FEED_BRANCH: gh-pages
   FEED_ROOT: 25.12
-
 jobs:
   check:
     name: Check NetBird release
-    runs-on: [self-hosted, Linux, X64]
-
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
     outputs:
-      build: ${{ steps.check.outputs.build }}
-      version: ${{ steps.check.outputs.version }}
-      tag: ${{ steps.check.outputs.tag }}
-
+      build: '${{ steps.check.outputs.build }}'
+      version: '${{ steps.check.outputs.version }}'
+      tag: '${{ steps.check.outputs.tag }}'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-
       - name: Check runner
         shell: bash
         run: |
@@ -65,14 +61,14 @@ jobs:
           echo
           echo "Docker:"
           docker version --format '{{.Server.Version}}'
-
       - name: Check latest stable NetBird release
         id: check
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
+          GH_TOKEN: '${{ github.token }}'
+        run: >
           set -euo pipefail
+
 
           RELEASE_JSON="$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
@@ -80,14 +76,18 @@ jobs:
             https://api.github.com/repos/netbirdio/netbird/releases/latest)"
 
           UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
+
           UPSTREAM_VERSION="${UPSTREAM_TAG#v}"
+
 
           if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" = "null" ]; then
             echo "ERROR: Could not determine latest NetBird release"
             exit 1
           fi
 
+
           echo "Latest stable NetBird release: $UPSTREAM_TAG"
+
 
           CURRENT_TAG="$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
@@ -111,8 +111,12 @@ jobs:
             fi
           fi
 
+
           # Do not automatically downgrade a newer manually maintained package.
-          MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile | head -n1 || true)"
+
+          MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile |
+          head -n1 || true)"
+
 
           if [ -n "$MAKEFILE_VERSION" ] && \
              [ "$(printf '%s\n%s\n' "$UPSTREAM_VERSION" "$MAKEFILE_VERSION" | sort -V | tail -n1)" = "$MAKEFILE_VERSION" ] && \
@@ -121,20 +125,23 @@ jobs:
             BUILD=false
           fi
 
-          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          echo "version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
 
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
+          echo "version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
   discover:
     name: Discover OpenWrt 25.12 architectures
     needs: check
     if: needs.check.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64]
-
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
     outputs:
-      matrix: ${{ steps.arch.outputs.matrix }}
-      count: ${{ steps.arch.outputs.count }}
-
+      matrix: '${{ steps.arch.outputs.matrix }}'
+      count: '${{ steps.arch.outputs.count }}'
     steps:
       - name: Discover supported package architectures
         id: arch
@@ -198,22 +205,20 @@ jobs:
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-
   build:
-    name: Build ${{ matrix.arch }}
+    name: 'Build ${{ matrix.arch }}'
     needs:
       - check
       - discover
-
     if: needs.check.outputs.build == 'true'
-
-    runs-on: [self-hosted, Linux, X64]
-
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON(needs.discover.outputs.matrix).arch }}
-
+        arch: '${{ fromJSON(needs.discover.outputs.matrix).arch }}'
     steps:
       - name: Check runner
         shell: bash
@@ -244,16 +249,14 @@ jobs:
             echo "ERROR: openssl is required"
             exit 1
           }
-
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-
-      - name: Update package to NetBird ${{ needs.check.outputs.version }}
+      - name: 'Update package to NetBird ${{ needs.check.outputs.version }}'
         shell: bash
         env:
-          VERSION: ${{ needs.check.outputs.version }}
+          VERSION: '${{ needs.check.outputs.version }}'
         run: |
           set -euo pipefail
 
@@ -264,11 +267,10 @@ jobs:
           sed -i -E \
             's#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v$(PKG_VERSION)?#' \
             netbird/Makefile
-
       - name: Calculate source hash
         shell: bash
         env:
-          VERSION: ${{ needs.check.outputs.version }}
+          VERSION: '${{ needs.check.outputs.version }}'
         run: |
           set -euo pipefail
 
@@ -289,7 +291,6 @@ jobs:
             netbird/Makefile
 
           echo "PKG_HASH=${HASH}"
-
       - name: Verify package
         shell: bash
         run: |
@@ -302,36 +303,33 @@ jobs:
           grep '^PKG_VERSION:=' netbird/Makefile
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
-
       - name: Set build parallelism
-      shell: bash
-      run: |
-        set -euo pipefail
+        shell: bash
+        run: |
+          set -euo pipefail
 
-        CPUS="$(nproc)"
-        echo "Using ${CPUS} CPU cores"
+          CPUS="$(nproc)"
+          echo "Using ${CPUS} CPU cores"
 
-        echo "MAKEFLAGS=-j${CPUS}" >> "$GITHUB_ENV"
-        echo "CONFIG_BUILD_NCPUS=${CPUS}" >> "$GITHUB_ENV"
-
+          echo "MAKEFLAGS=-j${CPUS}" >> "$GITHUB_ENV"
+          echo "CONFIG_BUILD_NCPUS=${CPUS}" >> "$GITHUB_ENV"
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
         env:
-          ARCH: ${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
+          ARCH: '${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}'
           FEEDNAME: action
           PACKAGES: netbird
           INDEX: 1
-          PRIVATE_KEY: ${{ secrets.APK_SIGNING_KEY }}
+          PRIVATE_KEY: '${{ secrets.APK_SIGNING_KEY }}'
           NO_REFRESH_CHECK: 1
           NO_SHFMT_CHECK: 1
           BUILD_LOG: 1
           V: s
-
       - name: Collect package and signed index
         shell: bash
         env:
-          VERSION: ${{ needs.check.outputs.version }}
-          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+          VERSION: '${{ needs.check.outputs.version }}'
+          APK_SIGNING_KEY: '${{ secrets.APK_SIGNING_KEY }}'
         run: |
           set -euo pipefail
 
@@ -380,50 +378,45 @@ jobs:
             -out "feed/${{ matrix.arch }}/netbird-feed.pub.pem"
 
           rm -f /tmp/netbird-feed.pem
-
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netbird-feed-${{ matrix.arch }}
+          name: 'netbird-feed-${{ matrix.arch }}'
           path: |
             release/*.apk
             feed/${{ matrix.arch }}/*
           if-no-files-found: error
           retention-days: 7
-
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: netbird-build-log-${{ matrix.arch }}
+          name: 'netbird-build-log-${{ matrix.arch }}'
           path: logs/
           if-no-files-found: ignore
           retention-days: 7
-
   release:
     name: Create Release and publish APK feed
     needs:
       - check
       - discover
       - build
-
     if: needs.check.outputs.build == 'true'
-
-    runs-on: [self-hosted, Linux, X64]
-
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: netbird-feed-*
           path: artifacts
           merge-multiple: true
-
       - name: Verify all architectures
         shell: bash
         run: |
@@ -477,31 +470,32 @@ jobs:
           )
 
           echo "All architecture builds completed successfully."
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ needs.check.outputs.tag }}
-          name: NetBird ${{ needs.check.outputs.tag }}
-          target_commitish: ${{ github.sha }}
+          tag_name: '${{ needs.check.outputs.tag }}'
+          name: 'NetBird ${{ needs.check.outputs.tag }}'
+          target_commitish: '${{ github.sha }}'
           generate_release_notes: true
-          files: |
+          files: >
             artifacts/release/*.apk
-            artifacts/feed/${{ fromJSON(needs.discover.outputs.matrix).arch[0] }}/netbird-feed.pub.pem
+
+            artifacts/feed/${{ fromJSON(needs.discover.outputs.matrix).arch[0]
+            }}/netbird-feed.pub.pem
           fail_on_unmatched_files: true
-
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-
+          GITHUB_TOKEN: '${{ github.token }}'
       - name: Publish APK feed to gh-pages
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.check.outputs.version }}
-        run: |
+          GH_TOKEN: '${{ github.token }}'
+          VERSION: '${{ needs.check.outputs.version }}'
+        run: >
           set -euo pipefail
 
+
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
 
           if git ls-remote \
             --exit-code \
@@ -533,12 +527,18 @@ jobs:
             git push -u origin "$FEED_BRANCH"
           fi
 
+
           cd "$GITHUB_WORKSPACE/feed-repo"
 
+
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git config user.email
+          "41898282+github-actions[bot]@users.noreply.github.com"
+
 
           mkdir -p "$FEED_ROOT"
+
 
           jq -r '.arch[]' \
             <<< '${{ needs.discover.outputs.matrix }}' |
@@ -556,46 +556,60 @@ jobs:
               "${FEED_ROOT}/${ARCH}/packages.adb"
           done
 
+
           FIRST_ARCH="$(
             jq -r '.arch[0]' \
               <<< '${{ needs.discover.outputs.matrix }}'
           )"
+
 
           cp \
             "${GITHUB_WORKSPACE}/artifacts/feed/${FIRST_ARCH}/netbird-feed.pub.pem" \
             netbird-feed.pub.pem
 
           cat > README.md <<EOF
+
           # NetBird OpenWrt APK feed
 
+
           OpenWrt: ${OPENWRT_VERSION}
+
           NetBird: ${VERSION}
+
 
           Add the public key:
 
+
           https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/netbird-feed.pub.pem
+
 
           Repository URL:
 
+
           https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}/<ARCH>/packages.adb
+
           EOF
 
+
           git add .
+
 
           git commit \
             -m "NetBird ${VERSION}" || true
 
           git push origin "$FEED_BRANCH"
-
       - name: Write OpenWrt repository instructions
         shell: bash
         env:
-          VERSION: ${{ needs.check.outputs.version }}
-        run: |
+          VERSION: '${{ needs.check.outputs.version }}'
+        run: >
           set -euo pipefail
 
+
           BASE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/${FEED_ROOT}"
+
           KEY="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${FEED_BRANCH}/netbird-feed.pub.pem"
+
 
           {
             echo "## NetBird OpenWrt APK feed"
