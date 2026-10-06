@@ -188,8 +188,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch:
-            - x86_64
+        arch: ${{ fromJSON(needs.discover.outputs.matrix).arch }}
 
     steps:
       - name: Prepare self-hosted runner
@@ -247,42 +246,27 @@ jobs:
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
 
-      - name: Diagnose Docker workspace permissions
+      - name: Prepare SDK output directories
         shell: bash
         run: |
-            set -euxo pipefail
+          set -euxo pipefail
 
-            echo "=== Runner ==="
-            id
-            echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-            ls -ld "$GITHUB_WORKSPACE"
-            stat -c '%A %a %u:%g %n' "$GITHUB_WORKSPACE"
+          SDK_WORK="${RUNNER_TEMP}/netbird-sdk"
 
-            echo "=== Parent directories ==="
-            namei -l "$GITHUB_WORKSPACE"
+          rm -rf "$SDK_WORK"
+          mkdir -p "$SDK_WORK/artifacts" "$SDK_WORK/feed"
 
-            echo "=== Docker ==="
-            docker info
+          # gh-action-sdk runs the SDK in another Docker container.
+          # Keep these bind-mounted directories world-writable so the
+          # nested container can always create /artifacts/bin and /feed.
+          chmod 0777 "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
 
-            echo "=== Docker bind mount test ==="
-            docker run --rm \
-            -v "$GITHUB_WORKSPACE:/artifacts" \
-            alpine:latest \
-            sh -euxc '
-            id
-            ls -ld /artifacts
-            stat -c "%A %a %u:%g %n" /artifacts
+          echo "SDK_WORK=$SDK_WORK" >> "$GITHUB_ENV"
 
-            echo "test" > /artifacts/.docker-write-test
-            mkdir -p /artifacts/.docker-mkdir-test
-
-            ls -la /artifacts/.docker-write-test
-            ls -ld /artifacts/.docker-mkdir-test
-
-            rm -rf \
-            /artifacts/.docker-write-test \
-            /artifacts/.docker-mkdir-test
-            '
+          echo "=== SDK output directories ==="
+          ls -ld "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
+          stat -c '%A %a %u:%g %n' \
+            "$SDK_WORK" "$SDK_WORK/artifacts" "$SDK_WORK/feed"
 
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
@@ -296,6 +280,32 @@ jobs:
           NO_SHFMT_CHECK: 1
           BUILD_LOG: 1
           V: s
+          ARTIFACTS_DIR: ${{ env.SDK_WORK }}/artifacts
+          FEED_DIR: ${{ env.SDK_WORK }}/feed
+
+      - name: Copy SDK output into workspace
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -d "$SDK_WORK/artifacts/bin" || {
+            echo "ERROR: SDK did not produce $SDK_WORK/artifacts/bin"
+            find "$SDK_WORK/artifacts" -maxdepth 5 -print | sort || true
+            exit 1
+          }
+
+          rm -rf bin
+          cp -a "$SDK_WORK/artifacts/bin" ./bin
+
+          # Preserve SDK logs for the existing artifact-upload step.
+          if [ -d "$SDK_WORK/artifacts/logs" ]; then
+            rm -rf logs
+            cp -a "$SDK_WORK/artifacts/logs" ./logs
+          fi
+
+          echo "=== Package output ==="
+          find "bin/packages/${{ matrix.arch }}/action" \
+            -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Collect package and signed index
         id: collect
@@ -418,7 +428,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/release/*.apk
-            artifacts/feed/aarch64_cortex-a53/netbird-feed.pub.pem
+            artifacts/feed/${{ fromJSON(needs.discover.outputs.matrix).arch[0] }}/netbird-feed.pub.pem
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
