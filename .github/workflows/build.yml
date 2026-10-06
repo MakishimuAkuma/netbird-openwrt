@@ -2,7 +2,6 @@ name: Build NetBird
 
 on:
   schedule:
-    # Check for a new stable NetBird release every 6 hours.
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
@@ -188,7 +187,9 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+      matrix:
+        arch:
+            - x86_64
 
     steps:
       - name: Prepare self-hosted runner
@@ -246,11 +247,42 @@ jobs:
           grep '^PKG_RELEASE:=' netbird/Makefile
           grep '^PKG_HASH:=' netbird/Makefile
 
-      - name: Prepare workspace permissions for DinD
+      - name: Diagnose Docker workspace permissions
         shell: bash
         run: |
-          set -euo pipefail
-          sudo chmod 0777 "$GITHUB_WORKSPACE"
+            set -euxo pipefail
+
+            echo "=== Runner ==="
+            id
+            echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            ls -ld "$GITHUB_WORKSPACE"
+            stat -c '%A %a %u:%g %n' "$GITHUB_WORKSPACE"
+
+            echo "=== Parent directories ==="
+            namei -l "$GITHUB_WORKSPACE"
+
+            echo "=== Docker ==="
+            docker info
+
+            echo "=== Docker bind mount test ==="
+            docker run --rm \
+            -v "$GITHUB_WORKSPACE:/artifacts" \
+            alpine:latest \
+            sh -euxc '
+            id
+            ls -ld /artifacts
+            stat -c "%A %a %u:%g %n" /artifacts
+
+            echo "test" > /artifacts/.docker-write-test
+            mkdir -p /artifacts/.docker-mkdir-test
+
+            ls -la /artifacts/.docker-write-test
+            ls -ld /artifacts/.docker-mkdir-test
+
+            rm -rf \
+            /artifacts/.docker-write-test \
+            /artifacts/.docker-mkdir-test
+            '
 
       - name: Build NetBird and signed packages.adb
         uses: openwrt/gh-action-sdk@main
