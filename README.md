@@ -3,13 +3,13 @@
 ### Install trust key once
 
 ```sh
-wget -qO /etc/apk/keys/netbird-feed.pem https://raw.githubusercontent.com/MakishimuAkuma/netbird-openwrt/gh-pages/netbird-feed.pub.pem
+wget -qO "/etc/apk/keys/netbird-feed.pem" "https://raw.githubusercontent.com/MakishimuAkuma/netbird-openwrt/gh-pages/netbird-feed.pub.pem"
 ```
 
 ### Add repository
 
 ```sh
-echo 'https://raw.githubusercontent.com/MakishimuAkuma/netbird-openwrt/gh-pages/25.12/<ARCH>/packages.adb' > /etc/apk/repositories.d/netbird.list
+echo "https://raw.githubusercontent.com/MakishimuAkuma/netbird-openwrt/gh-pages/25.12/$(apk info --print-arch)/packages.adb" > "/etc/apk/repositories.d/netbird.list"
 apk update
 apk add netbird
 ```
