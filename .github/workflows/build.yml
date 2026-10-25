@@ -20,6 +20,7 @@ jobs:
       build: '${{ steps.check.outputs.build }}'
       version: '${{ steps.check.outputs.version }}'
       tag: '${{ steps.check.outputs.tag }}'
+      hash: '${{ steps.check.outputs.hash }}'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -65,59 +66,60 @@ jobs:
         id: check
         shell: bash
         env:
-          GH_TOKEN: '${{ github.token }}'
-        run: >
+          GH_TOKEN: ${{ github.token }}
+        run: |
           set -euo pipefail
 
-
-          RELEASE_JSON="$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
+          echo "Checking latest stable NetBird release..."
+          RELEASE_JSON="$(curl -fsSL --retry 5 --retry-delay 2 \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/repos/netbirdio/netbird/releases/latest)"
 
-          UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
-
-          UPSTREAM_VERSION="${UPSTREAM_TAG#v}"
-
-
+          UPSTREAM_TAG="$(jq -er '.tag_name' <<< "$RELEASE_JSON")"
           if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" = "null" ]; then
             echo "ERROR: Could not determine latest NetBird release"
             exit 1
           fi
 
+          if ! [[ "$UPSTREAM_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Unexpected NetBird stable release tag: $UPSTREAM_TAG"
+            exit 1
+          fi
 
+          UPSTREAM_VERSION="${UPSTREAM_TAG#v}"
           echo "Latest stable NetBird release: $UPSTREAM_TAG"
 
-
-          CURRENT_TAG="$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
+          CURRENT_TAG="$(curl -fsSL --retry 5 --retry-delay 2 \
+            -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=20" \
-            | jq -r 'map(select(.draft == false and .prerelease == false)) | .[0].tag_name // ""')"
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" |
+            jq -r '.tag_name // ""')"
 
+          BUILD=false
           if [ -z "$CURRENT_TAG" ]; then
             BUILD=true
-            echo "No previous stable package release found."
+            echo "No previous stable package release found; initial build is required."
           else
             CURRENT_VERSION="${CURRENT_TAG#v}"
-            echo "Latest package release: $CURRENT_TAG"
+            if ! [[ "$CURRENT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: Unexpected latest package release tag: $CURRENT_TAG"
+              exit 1
+            fi
 
+            echo "Latest package release: $CURRENT_TAG"
             if [ "$(printf '%s\n%s\n' "$CURRENT_VERSION" "$UPSTREAM_VERSION" | sort -V | tail -n1)" = "$UPSTREAM_VERSION" ] \
               && [ "$CURRENT_VERSION" != "$UPSTREAM_VERSION" ]; then
               BUILD=true
+              echo "New NetBird version detected: $CURRENT_VERSION -> $UPSTREAM_VERSION"
             else
-              BUILD=false
+              echo "Published package release is already at $CURRENT_VERSION or newer."
             fi
           fi
 
-
-          # Do not automatically downgrade a newer manually maintained package.
-
-          MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile |
-          head -n1 || true)"
-
-
+          # Do not automatically downgrade a manually maintained newer package.
+          MAKEFILE_VERSION="$(sed -n 's/^PKG_VERSION:=//p' netbird/Makefile | head -n1 || true)"
           if [ -n "$MAKEFILE_VERSION" ] && \
              [ "$(printf '%s\n%s\n' "$UPSTREAM_VERSION" "$MAKEFILE_VERSION" | sort -V | tail -n1)" = "$MAKEFILE_VERSION" ] && \
              [ "$MAKEFILE_VERSION" != "$UPSTREAM_VERSION" ]; then
@@ -125,12 +127,76 @@ jobs:
             BUILD=false
           fi
 
+          {
+            echo "build=$BUILD"
+            echo "version=$UPSTREAM_VERSION"
+            echo "tag=$UPSTREAM_TAG"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          if [ "$BUILD" = true ]; then
+            SOURCE_URL="https://codeload.github.com/netbirdio/netbird/tar.gz/${UPSTREAM_TAG}"
+            TMP="$(mktemp)"
+            trap 'rm -f "$TMP"' EXIT
+            curl -fsSL --retry 5 --retry-delay 2 "$SOURCE_URL" -o "$TMP"
+            HASH="$(sha256sum "$TMP" | awk '{print $1}')"
+            echo "Source SHA256: $HASH"
+            echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          fi
+  update-makefile:
+    name: Update and commit NetBird package metadata
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+    steps:
+      - name: Checkout workflow branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
-          echo "version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Update NetBird Makefile
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          HASH: ${{ needs.check.outputs.hash }}
+        run: |
+          set -euo pipefail
 
-          echo "tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+          test -n "$VERSION"
+          test -n "$TAG"
+          test -n "$HASH"
+          test -f netbird/Makefile
+
+          sed -i -E \
+            "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" \
+            netbird/Makefile
+
+          sed -i -E \
+            "s#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/${TAG}?#" \
+            netbird/Makefile
+
+          sed -i -E \
+            "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" \
+            netbird/Makefile
+
+          grep -E '^PKG_(NAME|VERSION|RELEASE|SOURCE_URL|HASH):' netbird/Makefile
+          git diff --check
+
+          if git diff --quiet -- netbird/Makefile; then
+            echo "NetBird Makefile already matches ${VERSION}; no commit needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add netbird/Makefile
+          git commit -m "Update NetBird to ${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
   discover:
     name: Discover OpenWrt 25.12 architectures
     needs: check
@@ -210,6 +276,7 @@ jobs:
     needs:
       - check
       - discover
+      - update-makefile
     if: needs.check.outputs.build == 'true'
     runs-on:
       - self-hosted
@@ -249,48 +316,11 @@ jobs:
             echo "ERROR: openssl is required"
             exit 1
           }
-      - name: Checkout
+      - name: Checkout updated package branch
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 1
-      - name: 'Update package to NetBird ${{ needs.check.outputs.version }}'
-        shell: bash
-        env:
-          VERSION: '${{ needs.check.outputs.version }}'
-        run: |
-          set -euo pipefail
-
-          sed -i -E \
-            "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" \
-            netbird/Makefile
-
-          sed -i -E \
-            's#^PKG_SOURCE_URL:=.*#PKG_SOURCE_URL:=https://codeload.github.com/netbirdio/netbird/tar.gz/v$(PKG_VERSION)?#' \
-            netbird/Makefile
-      - name: Calculate source hash
-        shell: bash
-        env:
-          VERSION: '${{ needs.check.outputs.version }}'
-        run: |
-          set -euo pipefail
-
-          TMP="$(mktemp)"
-
-          curl -fL \
-            --retry 5 \
-            --retry-delay 2 \
-            "https://codeload.github.com/netbirdio/netbird/tar.gz/v${VERSION}" \
-            -o "$TMP"
-
-          HASH="$(sha256sum "$TMP" | awk '{print $1}')"
-
-          rm -f "$TMP"
-
-          sed -i -E \
-            "s/^PKG_HASH:=.*/PKG_HASH:=${HASH}/" \
-            netbird/Makefile
-
-          echo "PKG_HASH=${HASH}"
       - name: Verify package
         shell: bash
         run: |
