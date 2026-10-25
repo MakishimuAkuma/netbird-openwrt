@@ -1,7 +1,7 @@
 # NetBird OpenWrt APK feed
 
 OpenWrt: 25.12.5
-NetBird: 0.81.3
+NetBird: 0.81.4
 
 Add the public key:
 
