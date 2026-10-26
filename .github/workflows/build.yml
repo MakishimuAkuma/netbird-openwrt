@@ -417,14 +417,6 @@ jobs:
             feed/${{ matrix.arch }}/*
           if-no-files-found: error
           retention-days: 7
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: 'netbird-build-log-${{ matrix.arch }}'
-          path: logs/
-          if-no-files-found: ignore
-          retention-days: 7
   release:
     name: Create Release and publish APK feed
     needs:
